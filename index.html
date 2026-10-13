@@ -48,7 +48,7 @@ img{max-width:100%}
   .app { position: relative; height: 100%; display: grid; grid-template-rows: 38% minmax(0, 1fr) auto; overflow: hidden; }
 
   /* backdrop: selfie preview when the camera is on, plain black otherwise */
-  #cam { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); display: none; background: #000; }
+  #cam { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; transform: scaleX(-1); display: none; background: #000; }
   .app[data-cam="on"] #cam { display: block; }
 
   /* stage */
@@ -664,14 +664,14 @@ img{max-width:100%}
     for (var i = 0; i < c.length; i++) { if (MediaRecorder.isTypeSupported(c[i])) return c[i]; }
     return '';
   }
-  // Record through a 9:16 canvas, so every take comes out portrait
-  // whatever shape or rotation the camera delivers (centre crop, unmirrored).
-  function portraitStream() {
+  // Record the camera's whole picture, nothing cropped. Passing it through a canvas
+  // bakes in the phone's rotation, so the saved file plays upright everywhere (unmirrored).
+  function uprightStream() {
     var vw = cam.videoWidth, vh = cam.videoHeight;
     var canvas = document.createElement('canvas');
     if (!vw || !vh || !canvas.captureStream) return S.stream;
-    var H = Math.round(Math.min(1920, vw / vh > 9 / 16 ? vh : vw * 16 / 9) / 2) * 2;
-    var W = Math.round(H * 9 / 32) * 2;
+    var k = Math.min(1, 1920 / Math.max(vw, vh));
+    var W = Math.round(vw * k / 2) * 2, H = Math.round(vh * k / 2) * 2;
     canvas.width = W; canvas.height = H;
     var ctx = canvas.getContext('2d', { alpha: false });
     var token = {}; S.drawing = token;
@@ -679,9 +679,12 @@ img{max-width:100%}
       if (S.drawing !== token) return;
       var w = cam.videoWidth, h = cam.videoHeight;
       if (w && h) {
-        var sw, sh;
-        if (w / h > W / H) { sh = h; sw = h * W / H; } else { sw = w; sh = w * H / W; }
-        ctx.drawImage(cam, (w - sw) / 2, (h - sh) / 2, sw, sh, 0, 0, W, H);
+        if (w === vw && h === vh) ctx.drawImage(cam, 0, 0, W, H);
+        else { // the camera changed shape mid-take: fit it whole, never stretch or crop
+          var s = Math.min(W / w, H / h);
+          ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+          ctx.drawImage(cam, (W - w * s) / 2, (H - h * s) / 2, w * s, h * s);
+        }
       }
       if (cam.requestVideoFrameCallback) cam.requestVideoFrameCallback(draw); else requestAnimationFrame(draw);
     })();
@@ -695,7 +698,7 @@ img{max-width:100%}
   function startRec() {
     if (!window.MediaRecorder) { toast('Recording is not supported in this browser. The script will still run.'); return; }
     var type = pickType(), chunks = [], r, src;
-    try { src = portraitStream(); } catch (e) { stopDrawing(); src = S.stream; }
+    try { src = uprightStream(); } catch (e) { stopDrawing(); src = S.stream; }
     try { r = new MediaRecorder(src, type ? { mimeType: type, videoBitsPerSecond: 8000000 } : {}); }
     catch (e) { stopDrawing(); toast('Recording could not start. The script will still run.'); return; }
     var token = S.drawing;
