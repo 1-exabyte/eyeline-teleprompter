@@ -68,7 +68,7 @@ img{max-width:100%}
   }
   .track p { margin: 0 0 .85em; }
   .track .empty { color: var(--dim); font-weight: 400; font-size: 20px; }
-  .w { transition: color .15s, opacity .25s; }
+  .w { transition: color .06s, opacity .2s; }
   .w.done { opacity: .34; }
   .w.cur { color: var(--lamp); }
 
@@ -288,13 +288,14 @@ img{max-width:100%}
     state: 'idle', paused: false, finished: false,
     mode: 'auto', wpm: 135, fs: 34, script: DEFAULT_SCRIPT,
     camOn: false, stream: null, rec: null, chunks: [], blob: null, url: '',
-    t0: 0, tSec: -1, cd: null, recog: null, wl: null, toastT: 0
+    t0: 0, tSec: -1, cd: null, recog: null, wl: null, toastT: 0,
+    heardTail: [], drawing: false, outTrack: null
   };
   S.script = load('script', DEFAULT_SCRIPT);
   if (typeof S.script !== 'string') S.script = DEFAULT_SCRIPT;
   S.wpm = Math.min(260, Math.max(60, +load('wpm', 135) || 135));
   S.fs = Math.min(60, Math.max(20, +load('fs', 34) || 34));
-  S.mode = load('mode', 'auto');
+  S.mode = load('mode', SR ? 'voice' : 'auto');
   if (['auto', 'voice', 'tap'].indexOf(S.mode) < 0 || (S.mode === 'voice' && !SR)) S.mode = 'auto';
 
   /* ---------- script -> words ---------- */
@@ -345,12 +346,11 @@ img{max-width:100%}
     S.tops = t;
     if (snap) S.y = targetY();
   }
+  // The line holding the current word always sits at the top of the stage,
+  // so the word you are on never slides out of view mid-sentence.
   function targetY() {
     var N = S.n; if (!N) return 0;
-    var i = Math.min(N - 1, Math.max(0, Math.floor(S.p)));
-    var f = Math.min(1, Math.max(0, S.p - i));
-    var a = S.tops[i], b = S.tops[i + 1];
-    return a + (b - a) * f;
+    return S.tops[Math.min(N - 1, Math.max(0, Math.floor(S.p)))];
   }
   function paraOf(i) {
     var k = 0;
@@ -370,7 +370,7 @@ img{max-width:100%}
       }
       if (S.p >= S.n) finish();
     }
-    S.y += (targetY() - S.y) * (1 - Math.exp(-dt * 9));
+    S.y += (targetY() - S.y) * (1 - Math.exp(-dt * (S.mode === 'voice' ? 16 : 10)));
     track.style.transform = 'translate3d(0,' + (-S.y).toFixed(1) + 'px,0)';
     paint();
     $('bar').style.width = (S.n ? Math.min(1, S.p / S.n) * 100 : 0).toFixed(1) + '%';
@@ -424,7 +424,7 @@ img{max-width:100%}
     var auto = S.mode === 'auto';
     $('speedBox').hidden = !auto;
     $('modeHint').hidden = auto;
-    $('modeHint').textContent = S.mode === 'voice' ? 'The script follows what you say.' : 'Tap the script to step to the next sentence.';
+    $('modeHint').textContent = S.mode === 'voice' ? 'The highlight moves as soon as it hears each word.' : 'Tap the script to step to the next sentence.';
     if (u === 'run' && !auto) $('runSpeed').hidden = true;
     Array.prototype.forEach.call(document.querySelectorAll('[data-mode]'), function (b) {
       b.setAttribute('aria-pressed', b.dataset.mode === S.mode ? 'true' : 'false');
@@ -515,7 +515,7 @@ img{max-width:100%}
     var k = paraOf(cur);
     if (dir < 0) k = (cur - S.paraStart[k] > 3) ? k : Math.max(0, k - 1);
     else k = Math.min(S.paraStart.length - 1, k + 1);
-    S.p = S.paraStart[k]; S.finished = false;
+    S.p = S.paraStart[k]; S.finished = false; S.heardTail = [];
   }
   function tapStep() {
     if (!S.n || S.state === 'count') return;
@@ -523,40 +523,95 @@ img{max-width:100%}
     for (var i = 0; i < S.sentStart.length; i++) { if (S.sentStart[i] > cur) { nxt = S.sentStart[i]; break; } }
     // paragraph boundaries also count as a step
     for (var j = 0; j < S.paraStart.length; j++) { if (S.paraStart[j] > cur && S.paraStart[j] < nxt) { nxt = S.paraStart[j]; break; } }
-    S.p = nxt;
+    S.p = nxt; S.heardTail = [];
     if (S.p >= S.n && S.state === 'run') finish();
   }
 
   /* ---------- voice follow ---------- */
-  function heard(text) {
-    var sp = text.split(/\s+/).map(norm).filter(Boolean).slice(-4);
+  // Loose word comparison, so small recognition slips ("bet"/"bets", "regulate"/"regulated") still count.
+  function stem(w) { return w.length > 4 ? w.replace(/(?:'s|ing|ed|es|s|ly)$/, '') : w; }
+  function lev(a, b) {
+    var prev = [], cur, i, j;
+    for (j = 0; j <= b.length; j++) prev[j] = j;
+    for (i = 1; i <= a.length; i++) {
+      cur = [i];
+      for (j = 1; j <= b.length; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      prev = cur;
+    }
+    return prev[b.length];
+  }
+  function same(a, b) {
+    if (a === b) return true;
+    if (!a || !b) return false;
+    var sa = stem(a), sb = stem(b);
+    if (sa.length >= 3 && sa === sb) return true;
+    if (Math.min(a.length, b.length) < 4 || Math.abs(a.length - b.length) > 2) return false;
+    return lev(a, b) <= (Math.max(a.length, b.length) >= 8 ? 2 : 1);
+  }
+  // How well the last heard words line up with the script, ending on script word j.
+  // Allows one extra heard word or one skipped script word along the way.
+  function align(j, sp) {
+    var m = sp.length - 1, k = j, sc = 0, pen = 0;
+    if (!same(S.norm[j], sp[m])) return 0;
+    while (m >= 0 && k >= 0 && j - k < 12 && pen < 2) {
+      if (!S.norm[k]) { k--; continue; }
+      if (same(S.norm[k], sp[m])) { sc++; k--; m--; continue; }
+      if (m > 0 && same(S.norm[k], sp[m - 1])) { m--; pen++; continue; }
+      if (k > 0 && same(S.norm[k - 1], sp[m])) { k--; pen++; continue; }
+      break;
+    }
+    return sc - pen * .5;
+  }
+  // d = how far the heard word is from the highlighted word. The highlighted word itself
+  // moves on any match; bigger jumps need more matching words in a row.
+  function accept(d, sc, len) {
+    if (d === 0 || d === -1) return sc >= 1;
+    if (d < 0) return d >= -12 && sc >= 3;
+    if (d <= 2) return sc >= 1.5 || len >= 3;
+    if (d <= 10) return sc >= 2 || len >= 6;
+    if (d <= 40) return sc >= 3;
+    return sc >= 4;
+  }
+  function heard(words) {
+    if (!S.n || S.finished) return;
+    var sp = words.slice(-6);
     if (!sp.length) return;
     $('heard').textContent = sp.join(' ');
-    var from = Math.max(0, Math.floor(S.p) - 1), to = Math.min(S.n - 1, Math.floor(S.p) + 60);
-    var best = -1, bestScore = 0;
-    for (var j = from; j <= to; j++) {
-      if (!S.norm[j]) continue;
-      var sc = 0, k = j, m = sp.length - 1;
-      while (m >= 0 && k >= 0) {
-        if (!S.norm[k]) { k--; continue; }
-        if (S.norm[k] === sp[m]) { sc++; k--; m--; } else break;
+    var cur = Math.min(S.n, Math.floor(S.p)), best = -1, bestRank = -1e9;
+    // try with the newest word, and without it in case it is still half-recognised
+    for (var drop = 0; drop < 2 && sp.length - drop > 0; drop++) {
+      var s = drop ? sp.slice(0, -1) : sp;
+      for (var j = Math.max(0, cur - 12); j <= Math.min(S.n - 1, cur + 80); j++) {
+        if (!S.norm[j]) continue;
+        var sc = align(j, s);
+        if (sc <= 0) continue;
+        var d = j - cur;
+        if (!accept(d, sc, S.norm[j].length)) continue;
+        var rank = sc - Math.abs(d) * .1 - (d < -1 ? .5 : 0) - drop * .3;
+        if (rank > bestRank) { bestRank = rank; best = j; }
       }
-      if (!sc) continue;
-      var dist = j - S.p;
-      var ok = dist > 14 ? sc >= 3 : (sc >= 2 || S.norm[j].length >= 4 || dist <= 3);
-      if (ok && sc > bestScore) { best = j; bestScore = sc; }
     }
-    if (best >= 0 && best + 1 > S.p) { S.p = best + 1; if (S.p >= S.n) finish(); }
+    if (best < 0 || best + 1 === S.p) return;
+    S.p = best + 1;
+    if (S.p >= S.n) finish();
   }
   function voiceStart() {
     if (!SR) { toast('Voice follow is not supported here. Using Auto.'); setMode('auto'); return; }
     if (S.recog) return;
     var r = new SR();
-    r.continuous = true; r.interimResults = true; r.lang = navigator.language || 'en-US';
+    r.continuous = true; r.interimResults = true; r.maxAlternatives = 1;
+    r.lang = navigator.language || 'en-US';
+    S.heardTail = [];
+    // React to every partial result: finished phrases are kept as context,
+    // the words still being recognised are matched the moment they appear.
     r.onresult = function (e) {
-      var t = '';
-      for (var i = e.resultIndex; i < e.results.length; i++) t += ' ' + e.results[i][0].transcript;
-      heard(t);
+      var live = [];
+      for (var i = e.resultIndex; i < e.results.length; i++) {
+        var w = e.results[i][0].transcript.split(/\s+/).map(norm).filter(Boolean);
+        if (e.results[i].isFinal) S.heardTail = S.heardTail.concat(w).slice(-8);
+        else live = live.concat(w);
+      }
+      heard(S.heardTail.concat(live));
     };
     r.onerror = function (e) {
       if (e.error === 'not-allowed' || e.error === 'service-not-allowed' || e.error === 'audio-capture') {
@@ -609,13 +664,44 @@ img{max-width:100%}
     for (var i = 0; i < c.length; i++) { if (MediaRecorder.isTypeSupported(c[i])) return c[i]; }
     return '';
   }
+  // Record through a 9:16 canvas, so every take comes out portrait
+  // whatever shape or rotation the camera delivers (centre crop, unmirrored).
+  function portraitStream() {
+    var vw = cam.videoWidth, vh = cam.videoHeight;
+    var canvas = document.createElement('canvas');
+    if (!vw || !vh || !canvas.captureStream) return S.stream;
+    var H = Math.round(Math.min(1920, vw / vh > 9 / 16 ? vh : vw * 16 / 9) / 2) * 2;
+    var W = Math.round(H * 9 / 32) * 2;
+    canvas.width = W; canvas.height = H;
+    var ctx = canvas.getContext('2d', { alpha: false });
+    var token = {}; S.drawing = token;
+    (function draw() {
+      if (S.drawing !== token) return;
+      var w = cam.videoWidth, h = cam.videoHeight;
+      if (w && h) {
+        var sw, sh;
+        if (w / h > W / H) { sh = h; sw = h * W / H; } else { sw = w; sh = w * H / W; }
+        ctx.drawImage(cam, (w - sw) / 2, (h - sh) / 2, sw, sh, 0, 0, W, H);
+      }
+      if (cam.requestVideoFrameCallback) cam.requestVideoFrameCallback(draw); else requestAnimationFrame(draw);
+    })();
+    S.outTrack = canvas.captureStream(30).getVideoTracks()[0];
+    return new MediaStream([S.outTrack].concat(S.stream.getAudioTracks()));
+  }
+  function stopDrawing() {
+    S.drawing = false;
+    if (S.outTrack) { try { S.outTrack.stop(); } catch (e) {} S.outTrack = null; }
+  }
   function startRec() {
     if (!window.MediaRecorder) { toast('Recording is not supported in this browser. The script will still run.'); return; }
-    var type = pickType(), chunks = [], r;
-    try { r = new MediaRecorder(S.stream, type ? { mimeType: type, videoBitsPerSecond: 6000000 } : {}); }
-    catch (e) { toast('Recording could not start. The script will still run.'); return; }
+    var type = pickType(), chunks = [], r, src;
+    try { src = portraitStream(); } catch (e) { stopDrawing(); src = S.stream; }
+    try { r = new MediaRecorder(src, type ? { mimeType: type, videoBitsPerSecond: 8000000 } : {}); }
+    catch (e) { stopDrawing(); toast('Recording could not start. The script will still run.'); return; }
+    var token = S.drawing;
     r.ondataavailable = function (e) { if (e.data && e.data.size) chunks.push(e.data); };
     r.onstop = function () {
+      if (S.drawing === token) stopDrawing();
       if (!chunks.length) return;
       showReview(new Blob(chunks, { type: r.mimeType || type || 'video/webm' }));
     };
@@ -625,8 +711,12 @@ img{max-width:100%}
   function showReview(blob) {
     if (S.url) URL.revokeObjectURL(S.url);
     S.blob = blob; S.url = URL.createObjectURL(blob);
-    $('rv').src = S.url;
-    $('rvMeta').textContent = (blob.size / 1048576).toFixed(1) + ' MB';
+    var rv = $('rv'), mb = (blob.size / 1048576).toFixed(1) + ' MB';
+    rv.onloadedmetadata = function () {
+      if (rv.videoWidth) $('rvMeta').textContent = mb + ', ' + rv.videoWidth + '×' + rv.videoHeight + (rv.videoHeight > rv.videoWidth ? ' portrait' : '');
+    };
+    rv.src = S.url;
+    $('rvMeta').textContent = mb;
     $('review').hidden = false;
   }
   function closeReview(retake) {
