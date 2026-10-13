@@ -776,7 +776,7 @@ img{max-width:100%}
       comp.threshold.value = -30; comp.knee.value = 8; comp.ratio.value = 4; comp.attack.value = .004; comp.release.value = .2;
       var gain = ac.createGain(); gain.gain.value = 2.5;
       var lim = ac.createDynamicsCompressor();
-      lim.threshold.value = -2; lim.knee.value = 0; lim.ratio.value = 20; lim.attack.value = .001; lim.release.value = .08;
+      lim.threshold.value = -3; lim.knee.value = 0; lim.ratio.value = 20; lim.attack.value = .001; lim.release.value = .08;
       var dest = ac.createMediaStreamDestination();
       var chain = [src, hp, box, clar, air, comp, gain, lim, dest];
       for (var i = 0; i < chain.length - 1; i++) chain[i].connect(chain[i + 1]);
