@@ -1,0 +1,707 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0a0b0d">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<style>
+:root{color-scheme:dark;padding:env(safe-area-inset-top,0px) env(safe-area-inset-right,0px) env(safe-area-inset-bottom,0px) env(safe-area-inset-left,0px)}
+body{margin:0}
+img{max-width:100%}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<title>Eyeline Teleprompter</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=JetBrains+Mono:wght@500;700&display=swap">
+<style>
+  /* Layout: stage (script, pinned right under the lens) / middle (your own face) / dock (thumb controls).
+     One committed look: dark, like a camera app, with a lamp-yellow marker for the word you are on. */
+  :root {
+    --bg: #0a0b0d;
+    --glass: rgba(12, 13, 16, .78);
+    --ink: #eef0f3;
+    --dim: #a3aab5;
+    --line: rgba(255, 255, 255, .16);
+    --lamp: #ffd54a;
+    --lamp-ink: #1b1600;
+    --rec: #ff4a3d;
+    --f-ui: 'Atkinson Hyperlegible', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    --f-num: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --fs: 34px;
+    color-scheme: dark;
+  }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg); color: var(--ink);
+    font: 16px/1.4 var(--f-ui);
+    overflow: hidden; overscroll-behavior: none;
+    -webkit-tap-highlight-color: transparent; -webkit-text-size-adjust: 100%;
+    touch-action: manipulation;
+  }
+  button { font: inherit; color: inherit; }
+
+  .app { position: relative; height: 100%; display: grid; grid-template-rows: 38% minmax(0, 1fr) auto; overflow: hidden; }
+
+  /* backdrop: selfie preview when the camera is on, plain black otherwise */
+  #cam { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); display: none; background: #000; }
+  .app[data-cam="on"] #cam { display: block; }
+
+  /* stage */
+  .stage {
+    grid-row: 1; position: relative; z-index: 1; overflow: hidden; cursor: pointer;
+    background: var(--glass);
+    -webkit-mask-image: linear-gradient(to bottom, #000 76%, transparent 100%);
+    mask-image: linear-gradient(to bottom, #000 76%, transparent 100%);
+    user-select: none; -webkit-user-select: none;
+  }
+  .track {
+    position: relative; max-width: 34rem; margin: 0 auto;
+    padding: 10px 20px 70vh;
+    font-size: var(--fs); line-height: 1.28; font-weight: 700; text-wrap: pretty;
+    text-shadow: 0 1px 10px rgba(0, 0, 0, .55);
+    will-change: transform;
+  }
+  .track p { margin: 0 0 .85em; }
+  .track .empty { color: var(--dim); font-weight: 400; font-size: 20px; }
+  .w { transition: color .15s, opacity .25s; }
+  .w.done { opacity: .34; }
+  .w.cur { color: var(--lamp); }
+
+  /* middle */
+  .mid {
+    grid-row: 2; position: relative; z-index: 1; min-height: 0;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    padding: 12px 16px; pointer-events: none;
+  }
+  .mid > * { pointer-events: auto; }
+  .chip {
+    position: absolute; top: 4px; left: 50%; transform: translateX(-50%);
+    display: inline-flex; align-items: center; padding: 6px 12px; border-radius: 999px;
+    background: var(--glass); border: 1px solid var(--line);
+    font: 700 13px var(--f-num); font-variant-numeric: tabular-nums; letter-spacing: .04em; white-space: nowrap;
+  }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--rec); margin-right: 8px; animation: pulse 1.2s ease-in-out infinite; }
+  .dot.off { background: var(--dim); animation: none; }
+  @keyframes pulse { 50% { opacity: .35; } }
+  .count { font: 700 min(34vw, 150px)/1 var(--f-num); text-shadow: 0 2px 28px rgba(0, 0, 0, .7); }
+  .heard { position: absolute; left: 16px; right: 16px; bottom: 6px; text-align: center; color: var(--dim); font-size: 14px; min-height: 1.4em; pointer-events: none; }
+  .card {
+    max-width: 21rem; text-align: center; background: var(--glass); border: 1px solid var(--line);
+    border-radius: 18px; padding: 18px 18px 16px; display: flex; flex-direction: column; align-items: center; gap: 10px;
+  }
+  .card h2 { margin: 0; font-size: 19px; }
+  .card p { margin: 0; color: var(--dim); font-size: 15px; text-wrap: pretty; }
+
+  /* dock */
+  .dock {
+    grid-row: 3; position: relative; z-index: 2; display: flex; flex-direction: column; gap: 8px;
+    padding: 12px 16px 12px; border-top: 1px solid var(--line);
+    background: linear-gradient(to top, rgba(8, 9, 11, .95), rgba(8, 9, 11, .72));
+  }
+  .progress { position: absolute; left: 0; top: -2px; height: 3px; width: 100%; }
+  .progress i { display: block; height: 100%; width: 0; background: var(--lamp); }
+  .row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .row.between { justify-content: space-between; }
+
+  .btn {
+    min-height: 44px; min-width: 44px; padding: 0 12px; border-radius: 12px; cursor: pointer;
+    border: 1px solid var(--line); background: rgba(255, 255, 255, .08);
+    display: inline-flex; align-items: center; justify-content: center; gap: 8px; font-weight: 700;
+  }
+  .btn:active { transform: scale(.97); }
+  .btn:focus-visible, .seg button:focus-visible, textarea:focus-visible { outline: 2px solid var(--lamp); outline-offset: 2px; }
+  .btn svg { flex: none; }
+  .sq { flex-direction: column; gap: 3px; width: 64px; min-height: 56px; padding: 0; font-size: 11px; letter-spacing: .03em; }
+  .sq[aria-pressed="true"] { border-color: var(--lamp); color: var(--lamp); }
+  .primary {
+    flex: 1; min-height: 56px; border-radius: 16px; border: 0; background: var(--ink); color: #0a0b0d; font-size: 17px;
+    white-space: nowrap; gap: 6px; padding: 0 8px;
+  }
+  .app[data-ui="run"] .primary, .app[data-ui="pause"] .primary { background: rgba(255, 255, 255, .14); color: var(--ink); border: 1px solid var(--line); }
+  .app[data-ui="count"] .primary { background: rgba(255, 255, 255, .14); color: var(--ink); border: 1px solid var(--line); }
+  .stop { border-color: rgba(255, 74, 61, .6); background: rgba(255, 74, 61, .16); color: #ffb9b3; }
+  .rec-mark { width: 14px; height: 14px; border-radius: 50%; background: var(--rec); }
+
+  .seg { display: flex; flex: 1; min-width: 0; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  .seg button { flex: 1; min-height: 44px; border: 0; background: transparent; color: var(--dim); font-weight: 700; cursor: pointer; }
+  .seg button + button { border-left: 1px solid var(--line); }
+  .seg button[aria-pressed="true"] { background: var(--lamp); color: var(--lamp-ink); }
+
+  .step { display: flex; align-items: center; border: 1px solid var(--line); border-radius: 12px; }
+  .step button { width: 44px; min-height: 44px; border: 0; background: transparent; font-size: 20px; font-weight: 700; cursor: pointer; border-radius: 12px; }
+  .step output { min-width: 4em; text-align: center; font: 700 15px var(--f-num); font-variant-numeric: tabular-nums; }
+  .step output small { display: block; font: 400 10px var(--f-ui); color: var(--dim); letter-spacing: .06em; text-transform: uppercase; }
+  .hint { color: var(--dim); font-size: 14px; text-align: right; flex: 1; text-wrap: pretty; }
+  .nav { gap: 0; }
+  .nav output { min-width: 3.6em; }
+
+  .toast {
+    position: absolute; left: 16px; right: 16px; bottom: 12px; z-index: 8; margin: 0 auto; max-width: 26rem;
+    background: #1d2027; border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px; font-size: 15px;
+    opacity: 0; transform: translateY(8px); pointer-events: none; transition: opacity .2s, transform .2s;
+  }
+  .toast.show { opacity: 1; transform: none; }
+
+  /* script editor + review */
+  .sheet { position: absolute; inset: 0; z-index: 6; background: var(--bg); display: flex; flex-direction: column; gap: 12px; padding: 16px; }
+  .sheet header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .sheet h2 { margin: 0; font-size: 22px; }
+  .sheet .note { margin: 0; color: var(--dim); font-size: 15px; text-wrap: pretty; }
+  .sheet textarea {
+    flex: 1; min-height: 0; width: 100%; resize: none; background: #12141a; color: var(--ink);
+    border: 1px solid var(--line); border-radius: 14px; padding: 14px; font: 400 18px/1.5 var(--f-ui);
+  }
+  .sheet footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--dim); font-size: 14px; }
+  .sheet video { flex: 1; min-height: 0; width: 100%; object-fit: contain; background: #000; border-radius: 14px; }
+  .sheet .actions { display: flex; gap: 8px; }
+  .pill { border: 0; background: var(--ink); color: #0a0b0d; border-radius: 999px; padding: 0 18px; min-height: 44px; font-weight: 700; cursor: pointer; }
+  .pill.wide { flex: 1; min-height: 52px; font-size: 17px; }
+  .pill.ghost { background: rgba(255, 255, 255, .1); color: var(--ink); border: 1px solid var(--line); }
+
+  @media (max-height: 640px) { .app { grid-template-rows: 44% minmax(0, 1fr) auto; } }
+  @media (prefers-reduced-motion: reduce) { .dot { animation: none; } .w, .toast { transition: none; } }
+</style>
+
+<div class="app" id="app" data-ui="idle" data-cam="off">
+  <video id="cam" playsinline muted autoplay></video>
+
+  <section class="stage" id="stage" aria-label="Script">
+    <div class="track" id="track"></div>
+  </section>
+
+  <section class="mid">
+    <div class="chip" id="chip" hidden><span class="dot" id="chipDot"></span><span id="chipText">0:00</span></div>
+    <div class="count" id="count" hidden>3</div>
+    <div class="card" id="camCard">
+      <h2>Selfie camera is off</h2>
+      <p id="camMsg">Turn it on to see yourself and record. The script stays at the top of the screen, right under the lens.</p>
+      <button class="pill" id="camCardBtn" type="button">Turn on camera</button>
+    </div>
+    <div class="heard" id="heard" aria-live="polite"></div>
+  </section>
+
+  <footer class="dock">
+    <div class="progress" aria-hidden="true"><i id="bar"></i></div>
+
+    <div class="row" data-show="idle pause">
+      <div class="seg" role="group" aria-label="How the script moves">
+        <button type="button" data-mode="auto" aria-pressed="true">Auto</button>
+        <button type="button" data-mode="voice" aria-pressed="false">Voice</button>
+        <button type="button" data-mode="tap" aria-pressed="false">Tap</button>
+      </div>
+      <div class="step" role="group" aria-label="Text size">
+        <button type="button" data-act="fs-" aria-label="Smaller text">A&minus;</button>
+        <button type="button" data-act="fs+" aria-label="Larger text">A+</button>
+      </div>
+    </div>
+
+    <div class="row between" data-show="idle pause">
+      <div class="step nav" role="group" aria-label="Jump between items">
+        <button type="button" data-act="prev" aria-label="Previous item">&lsaquo;</button>
+        <output id="itemOut" aria-live="polite">1/1</output>
+        <button type="button" data-act="next" aria-label="Next item">&rsaquo;</button>
+      </div>
+      <div class="step" id="speedBox" role="group" aria-label="Speed">
+        <button type="button" data-act="wpm-" aria-label="Slower">&minus;</button>
+        <output><span class="wpmVal">135</span><small>words/min</small></output>
+        <button type="button" data-act="wpm+" aria-label="Faster">+</button>
+      </div>
+      <div class="hint" id="modeHint" hidden></div>
+    </div>
+
+    <div class="row">
+      <button class="btn sq" id="btnScript" type="button" data-show="idle">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h4l11-11-4-4L4 16v4z"/><path d="M13 7l4 4"/></svg>
+        Script
+      </button>
+      <div class="step" id="runSpeed" role="group" aria-label="Speed" data-show="run">
+        <button type="button" data-act="wpm-" aria-label="Slower">&minus;</button>
+        <output><span class="wpmVal">135</span><small>words/min</small></output>
+        <button type="button" data-act="wpm+" aria-label="Faster">+</button>
+      </div>
+      <button class="btn primary" id="btnPrimary" type="button"></button>
+      <button class="btn sq" id="btnCam" type="button" data-show="idle" aria-pressed="false">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8a2 2 0 012-2h2l1.5-2h7L17 6h2a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2V8z"/><circle cx="12" cy="13" r="3.5"/></svg>
+        <span id="camLabel">Camera</span>
+      </button>
+      <button class="btn sq stop" id="btnStop" type="button" data-show="run pause">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>
+        Stop
+      </button>
+    </div>
+  </footer>
+
+  <div class="toast" id="toast" role="status"></div>
+
+  <section class="sheet" id="editor" hidden aria-label="Edit script">
+    <header>
+      <h2>Your script</h2>
+      <button class="pill" id="edDone" type="button">Done</button>
+    </header>
+    <p class="note">Leave a blank line between items. Each item becomes a stop you can jump to with the arrows.</p>
+    <textarea id="script" spellcheck="true" aria-label="Script text"></textarea>
+    <footer>
+      <span id="edStats"></span>
+      <button class="pill ghost" id="edClear" type="button">Clear</button>
+    </footer>
+  </section>
+
+  <section class="sheet" id="review" hidden aria-label="Review take">
+    <header>
+      <h2>Your take</h2>
+      <span id="rvMeta" style="color:var(--dim);font-size:14px"></span>
+    </header>
+    <video id="rv" controls playsinline></video>
+    <div class="actions">
+      <button class="pill wide" id="rvSave" type="button">Save video</button>
+      <button class="pill ghost" id="rvRetake" type="button">Retake</button>
+      <button class="pill ghost" id="rvClose" type="button">Close</button>
+    </div>
+  </section>
+</div>
+
+<script>
+(function () {
+  'use strict';
+  var $ = function (id) { return document.getElementById(id); };
+  var app = $('app'), stage = $('stage'), track = $('track'), cam = $('cam');
+
+  var DEFAULT_SCRIPT = [
+    "First, Silver argues that banning sports betting hasn't stopped people from doing it. Instead, many people turn to illegal bookmakers and unregulated websites. We agree with him on this point. If people are already betting, banning it doesn't necessarily make it disappear. Having a regulated system could give people more protection and make suspicious activity easier to detect. However, the fact that something already happens doesn't automatically mean legalizing it is the right answer.",
+    "Finally, Silver proposes strict regulations, including age verification, monitoring suspicious bets, licensing betting companies, and identifying people with gambling problems. We support these safeguards because they could help protect consumers. But we question whether they are enough, especially when betting becomes available instantly through a phone. Regulations may reduce certain risks, but they cannot guarantee that people won't develop harmful gambling habits.",
+    "However, this change also raises questions about the risks that come with making betting so accessible. Today, people can place bets while watching a game, sometimes with just a few clicks on their phones. This connects to our experiment, where one person wanted to keep betting to recover their losses. Of course, our small experiment cannot represent everyone, but it shows why protecting people matters. Silver argued that regulation could make betting safer, and while that may be true, we still need to ask whether the rules are enough when betting is becoming easier than ever."
+  ].join('\n\n');
+
+  var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+  function load(k, d) { try { var v = localStorage.getItem('eyeline.' + k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } }
+  function save(k, v) { try { localStorage.setItem('eyeline.' + k, JSON.stringify(v)); } catch (e) {} }
+
+  var S = {
+    n: 0, spans: [], norm: [], wt: [], paraStart: [], sentStart: [], tops: [0],
+    p: 0, y: 0, shown: -1,
+    state: 'idle', paused: false, finished: false,
+    mode: 'auto', wpm: 135, fs: 34, script: DEFAULT_SCRIPT,
+    camOn: false, stream: null, rec: null, chunks: [], blob: null, url: '',
+    t0: 0, tSec: -1, cd: null, recog: null, wl: null, toastT: 0
+  };
+  S.script = load('script', DEFAULT_SCRIPT);
+  if (typeof S.script !== 'string') S.script = DEFAULT_SCRIPT;
+  S.wpm = Math.min(260, Math.max(60, +load('wpm', 135) || 135));
+  S.fs = Math.min(60, Math.max(20, +load('fs', 34) || 34));
+  S.mode = load('mode', 'auto');
+  if (['auto', 'voice', 'tap'].indexOf(S.mode) < 0 || (S.mode === 'voice' && !SR)) S.mode = 'auto';
+
+  /* ---------- script -> words ---------- */
+  function norm(w) {
+    return w.toLowerCase().replace(/[‘’]/g, "'").replace(/[^\p{L}\p{N}']/gu, '').replace(/^'+|'+$/g, '');
+  }
+  function weight(w, last) {
+    var x = 1;
+    if (/[.!?…]["'”’)]*$/.test(w)) x += .9;
+    else if (/[,;:–—]["'”’)]*$/.test(w)) x += .4;
+    if (last) x += .7;
+    if (norm(w).length > 9) x += .25;
+    return x;
+  }
+
+  function build() {
+    var paras = S.script.split(/\n\s*\n/).map(function (s) { return s.replace(/\s+/g, ' ').trim(); }).filter(Boolean);
+    track.textContent = '';
+    S.spans = []; S.norm = []; S.wt = []; S.paraStart = []; S.sentStart = []; S.shown = -1;
+    paras.forEach(function (para) {
+      var el = document.createElement('p');
+      var words = para.split(' ');
+      S.paraStart.push(S.spans.length);
+      words.forEach(function (w, i) {
+        var sp = document.createElement('span');
+        sp.className = 'w'; sp.textContent = w;
+        el.appendChild(sp);
+        if (i < words.length - 1) el.appendChild(document.createTextNode(' '));
+        S.spans.push(sp); S.norm.push(norm(w)); S.wt.push(weight(w, i === words.length - 1));
+        if (i < words.length - 1 && /[.!?…]["'”’)]*$/.test(w)) S.sentStart.push(S.spans.length);
+      });
+      track.appendChild(el);
+    });
+    S.n = S.spans.length;
+    if (!S.n) {
+      var e = document.createElement('p'); e.className = 'empty'; e.textContent = 'Tap Script to add what you want to say.';
+      track.appendChild(e);
+    }
+    S.p = Math.min(S.p, S.n);
+    measure(true);
+    readouts();
+  }
+
+  function measure(snap) {
+    var t = S.spans.map(function (s) { return s.offsetTop; });
+    var last = S.spans[S.n - 1];
+    t.push(S.n ? t[S.n - 1] + (last ? last.offsetHeight : 0) : 0);
+    S.tops = t;
+    if (snap) S.y = targetY();
+  }
+  function targetY() {
+    var N = S.n; if (!N) return 0;
+    var i = Math.min(N - 1, Math.max(0, Math.floor(S.p)));
+    var f = Math.min(1, Math.max(0, S.p - i));
+    var a = S.tops[i], b = S.tops[i + 1];
+    return a + (b - a) * f;
+  }
+  function paraOf(i) {
+    var k = 0;
+    for (var j = 0; j < S.paraStart.length; j++) { if (S.paraStart[j] <= i) k = j; }
+    return k;
+  }
+
+  /* ---------- frame loop ---------- */
+  var last = 0;
+  function frame(t) {
+    var dt = Math.min(.5, (t - last) / 1000); last = t;
+    if (S.state === 'run' && !S.paused && !S.finished && S.n) {
+      if (S.mode === 'auto') {
+        var i = Math.floor(S.p);
+        if (i >= S.n) finish();
+        else S.p += dt / ((60 / S.wpm) * S.wt[i]);
+      }
+      if (S.p >= S.n) finish();
+    }
+    S.y += (targetY() - S.y) * (1 - Math.exp(-dt * 9));
+    track.style.transform = 'translate3d(0,' + (-S.y).toFixed(1) + 'px,0)';
+    paint();
+    $('bar').style.width = (S.n ? Math.min(1, S.p / S.n) * 100 : 0).toFixed(1) + '%';
+    if (S.state === 'run') tick();
+    requestAnimationFrame(frame);
+  }
+  function paint() {
+    var cur = Math.min(S.n, Math.max(0, Math.floor(S.p)));
+    if (cur === S.shown) return;
+    var lo = S.shown < 0 ? 0 : Math.min(cur, S.shown);
+    var hi = S.shown < 0 ? S.n - 1 : Math.max(cur, S.shown);
+    for (var i = lo; i <= hi; i++) {
+      var sp = S.spans[i]; if (!sp) continue;
+      sp.classList.toggle('done', i < cur);
+      sp.classList.toggle('cur', i === cur);
+    }
+    S.shown = cur;
+    readouts();
+  }
+  function tick() {
+    var sec = Math.floor((performance.now() - S.t0) / 1000);
+    if (sec === S.tSec) return;
+    S.tSec = sec;
+    $('chipText').textContent = fmt(sec);
+  }
+  function fmt(s) { return Math.floor(s / 60) + ':' + ('0' + (s % 60)).slice(-2); }
+
+  function finish() {
+    if (S.finished) return;
+    S.finished = true; S.p = S.n;
+    toast(S.rec ? 'End of script. Tap Stop when you are done.' : 'End of script.');
+    setUI();
+  }
+
+  /* ---------- readouts & UI state ---------- */
+  function readouts() {
+    var k = S.n ? paraOf(Math.min(S.n - 1, Math.floor(S.p))) : 0;
+    $('itemOut').textContent = (S.n ? k + 1 : 0) + '/' + S.paraStart.length;
+    Array.prototype.forEach.call(document.querySelectorAll('.wpmVal'), function (e) { e.textContent = S.wpm; });
+    document.documentElement.style.setProperty('--fs', S.fs + 'px');
+  }
+
+  function ui() { return S.state === 'run' && S.paused ? 'pause' : S.state; }
+  function setUI() {
+    var u = ui();
+    app.dataset.ui = u;
+    Array.prototype.forEach.call(document.querySelectorAll('[data-show]'), function (el) {
+      el.hidden = el.dataset.show.split(' ').indexOf(u) < 0;
+    });
+    // speed control only exists in Auto; other modes show a hint
+    var auto = S.mode === 'auto';
+    $('speedBox').hidden = !auto;
+    $('modeHint').hidden = auto;
+    $('modeHint').textContent = S.mode === 'voice' ? 'The script follows what you say.' : 'Tap the script to step to the next sentence.';
+    if (u === 'run' && !auto) $('runSpeed').hidden = true;
+    Array.prototype.forEach.call(document.querySelectorAll('[data-mode]'), function (b) {
+      b.setAttribute('aria-pressed', b.dataset.mode === S.mode ? 'true' : 'false');
+    });
+    var p = $('btnPrimary');
+    if (u === 'idle') p.innerHTML = S.camOn ? '<span class="rec-mark"></span>Record' : playIcon() + 'Start';
+    else if (u === 'count') p.innerHTML = 'Cancel';
+    else if (u === 'run') p.innerHTML = S.finished ? 'Back to top' : pauseIcon() + 'Pause text';
+    else p.innerHTML = playIcon() + 'Resume text';
+    $('camCard').hidden = !(u === 'idle' && !S.camOn);
+    $('btnCam').setAttribute('aria-pressed', S.camOn ? 'true' : 'false');
+    $('camLabel').textContent = S.camOn ? 'Camera on' : 'Camera';
+    $('count').hidden = u !== 'count';
+    $('chip').hidden = !(u === 'run' || u === 'pause');
+    var recording = !!S.rec;
+    $('chipDot').className = 'dot' + (recording ? '' : ' off');
+    if (u === 'run' || u === 'pause') $('chipText').textContent = fmt(Math.max(0, Math.floor((performance.now() - S.t0) / 1000))) + (recording ? '' : '  rehearsal');
+    $('heard').textContent = '';
+    readouts();
+  }
+  function playIcon() { return '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 4.5v15a1 1 0 001.5.86l12-7.5a1 1 0 000-1.72l-12-7.5A1 1 0 007 4.5z"/></svg>'; }
+  function pauseIcon() { return '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="5" y="4" width="5" height="16" rx="1.5"/><rect x="14" y="4" width="5" height="16" rx="1.5"/></svg>'; }
+
+  function toast(msg) {
+    var t = $('toast'); t.textContent = msg; t.classList.add('show');
+    clearTimeout(S.toastT); S.toastT = setTimeout(function () { t.classList.remove('show'); }, 3600);
+  }
+
+  /* ---------- session control ---------- */
+  function begin() {
+    if (!S.n) { openEditor(); return; }
+    if (S.p >= S.n - .5) { S.p = 0; S.y = 0; }
+    S.finished = false; S.paused = false; S.state = 'count';
+    var n = 3; $('count').textContent = n; setUI();
+    S.cd = setInterval(function () {
+      n--;
+      if (n <= 0) { clearInterval(S.cd); S.cd = null; go(); }
+      else $('count').textContent = n;
+    }, 900);
+  }
+  function cancelCount() { clearInterval(S.cd); S.cd = null; S.state = 'idle'; setUI(); }
+  function go() {
+    S.state = 'run'; S.paused = false; S.finished = false;
+    S.t0 = performance.now(); S.tSec = -1;
+    if (S.camOn && S.stream) startRec();
+    if (S.mode === 'voice') voiceStart();
+    lock(); setUI();
+  }
+  function pauseText() { S.paused = true; voiceStop(); setUI(); }
+  function resumeText() { S.paused = false; if (S.mode === 'voice') voiceStart(); setUI(); }
+  function stop() {
+    voiceStop(); unlock();
+    var r = S.rec;
+    S.state = 'idle'; S.paused = false; S.finished = false;
+    S.p = 0; S.y = 0;
+    setUI();
+    if (r && r.state !== 'inactive') { try { r.stop(); } catch (e) {} }
+    S.rec = null;
+  }
+  function primary() {
+    var u = ui();
+    if (u === 'idle') begin();
+    else if (u === 'count') cancelCount();
+    else if (u === 'run') { if (S.finished) { S.p = 0; S.finished = false; } else pauseText(); }
+    else resumeText();
+  }
+
+  function setMode(m) {
+    if (m === 'voice' && !SR) { toast('Voice follow needs Chrome or Safari. Staying on Auto.'); return; }
+    S.mode = m; save('mode', m);
+    voiceStop();
+    if (S.state === 'run' && !S.paused && m === 'voice') voiceStart();
+    setUI();
+  }
+
+  function nudge(what) {
+    if (what === 'wpm+') S.wpm = Math.min(260, S.wpm + 5);
+    if (what === 'wpm-') S.wpm = Math.max(60, S.wpm - 5);
+    if (what === 'fs+') S.fs = Math.min(60, S.fs + 2);
+    if (what === 'fs-') S.fs = Math.max(20, S.fs - 2);
+    save('wpm', S.wpm); save('fs', S.fs);
+    readouts();
+    if (what.indexOf('fs') === 0) measure(true);
+  }
+  function jump(dir) {
+    if (!S.n) return;
+    var cur = Math.floor(Math.min(S.n - 1, S.p));
+    var k = paraOf(cur);
+    if (dir < 0) k = (cur - S.paraStart[k] > 3) ? k : Math.max(0, k - 1);
+    else k = Math.min(S.paraStart.length - 1, k + 1);
+    S.p = S.paraStart[k]; S.finished = false;
+  }
+  function tapStep() {
+    if (!S.n || S.state === 'count') return;
+    var cur = Math.floor(S.p), nxt = S.n;
+    for (var i = 0; i < S.sentStart.length; i++) { if (S.sentStart[i] > cur) { nxt = S.sentStart[i]; break; } }
+    // paragraph boundaries also count as a step
+    for (var j = 0; j < S.paraStart.length; j++) { if (S.paraStart[j] > cur && S.paraStart[j] < nxt) { nxt = S.paraStart[j]; break; } }
+    S.p = nxt;
+    if (S.p >= S.n && S.state === 'run') finish();
+  }
+
+  /* ---------- voice follow ---------- */
+  function heard(text) {
+    var sp = text.split(/\s+/).map(norm).filter(Boolean).slice(-4);
+    if (!sp.length) return;
+    $('heard').textContent = sp.join(' ');
+    var from = Math.max(0, Math.floor(S.p) - 1), to = Math.min(S.n - 1, Math.floor(S.p) + 60);
+    var best = -1, bestScore = 0;
+    for (var j = from; j <= to; j++) {
+      if (!S.norm[j]) continue;
+      var sc = 0, k = j, m = sp.length - 1;
+      while (m >= 0 && k >= 0) {
+        if (!S.norm[k]) { k--; continue; }
+        if (S.norm[k] === sp[m]) { sc++; k--; m--; } else break;
+      }
+      if (!sc) continue;
+      var dist = j - S.p;
+      var ok = dist > 14 ? sc >= 3 : (sc >= 2 || S.norm[j].length >= 4 || dist <= 3);
+      if (ok && sc > bestScore) { best = j; bestScore = sc; }
+    }
+    if (best >= 0 && best + 1 > S.p) { S.p = best + 1; if (S.p >= S.n) finish(); }
+  }
+  function voiceStart() {
+    if (!SR) { toast('Voice follow is not supported here. Using Auto.'); setMode('auto'); return; }
+    if (S.recog) return;
+    var r = new SR();
+    r.continuous = true; r.interimResults = true; r.lang = navigator.language || 'en-US';
+    r.onresult = function (e) {
+      var t = '';
+      for (var i = e.resultIndex; i < e.results.length; i++) t += ' ' + e.results[i][0].transcript;
+      heard(t);
+    };
+    r.onerror = function (e) {
+      if (e.error === 'not-allowed' || e.error === 'service-not-allowed' || e.error === 'audio-capture') {
+        S.recog = null;
+        toast('Voice follow cannot use the microphone here. Switched to Auto.');
+        setMode('auto');
+      }
+    };
+    r.onend = function () {
+      if (S.recog === r && S.state === 'run' && !S.paused && S.mode === 'voice') { try { r.start(); } catch (e) {} }
+    };
+    S.recog = r;
+    try { r.start(); } catch (e) {}
+  }
+  function voiceStop() {
+    var r = S.recog; S.recog = null;
+    if (r) { try { r.abort(); } catch (e) {} }
+  }
+
+  /* ---------- camera + recording ---------- */
+  function camStart() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      camFail('This browser cannot open the camera from here.'); return Promise.resolve(false);
+    }
+    return navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'user', width: { ideal: 1080 }, height: { ideal: 1920 }, frameRate: { ideal: 30 } },
+      audio: { echoCancellation: true, noiseSuppression: true }
+    }).then(function (stream) {
+      S.stream = stream; cam.srcObject = stream;
+      var pl = cam.play(); if (pl && pl.catch) pl.catch(function () {});
+      S.camOn = true; app.dataset.cam = 'on'; setUI(); return true;
+    }).catch(function () {
+      camFail("The camera could not start. Allow camera and microphone for this page. If it is open inside another app or a shared view, open it directly in your browser. You can still rehearse here.");
+      return false;
+    });
+  }
+  function camFail(msg) {
+    S.camOn = false; app.dataset.cam = 'off';
+    $('camMsg').textContent = msg; setUI();
+  }
+  function camStop() {
+    if (S.stream) S.stream.getTracks().forEach(function (t) { t.stop(); });
+    S.stream = null; cam.srcObject = null; S.camOn = false; app.dataset.cam = 'off';
+    $('camMsg').textContent = 'Turn it on to see yourself and record. The script stays at the top of the screen, right under the lens.';
+    setUI();
+  }
+  function pickType() {
+    if (!window.MediaRecorder) return '';
+    var c = ['video/mp4;codecs=avc1.42E01E,mp4a.40.2', 'video/mp4', 'video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'];
+    for (var i = 0; i < c.length; i++) { if (MediaRecorder.isTypeSupported(c[i])) return c[i]; }
+    return '';
+  }
+  function startRec() {
+    if (!window.MediaRecorder) { toast('Recording is not supported in this browser. The script will still run.'); return; }
+    var type = pickType(), chunks = [], r;
+    try { r = new MediaRecorder(S.stream, type ? { mimeType: type, videoBitsPerSecond: 6000000 } : {}); }
+    catch (e) { toast('Recording could not start. The script will still run.'); return; }
+    r.ondataavailable = function (e) { if (e.data && e.data.size) chunks.push(e.data); };
+    r.onstop = function () {
+      if (!chunks.length) return;
+      showReview(new Blob(chunks, { type: r.mimeType || type || 'video/webm' }));
+    };
+    S.rec = r;
+    r.start(1000);
+  }
+  function showReview(blob) {
+    if (S.url) URL.revokeObjectURL(S.url);
+    S.blob = blob; S.url = URL.createObjectURL(blob);
+    $('rv').src = S.url;
+    $('rvMeta').textContent = (blob.size / 1048576).toFixed(1) + ' MB';
+    $('review').hidden = false;
+  }
+  function closeReview(retake) {
+    $('review').hidden = true;
+    try { $('rv').pause(); } catch (e) {}
+    if (retake) { S.p = 0; S.y = 0; }
+  }
+  function saveVideo() {
+    if (!S.blob) return;
+    var ext = /mp4/.test(S.blob.type) ? 'mp4' : 'webm';
+    var name = 'take-' + new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-') + '.' + ext;
+    var file;
+    try { file = new File([S.blob], name, { type: S.blob.type }); } catch (e) { file = null; }
+    if (file && navigator.canShare && navigator.canShare({ files: [file] })) {
+      navigator.share({ files: [file], title: 'Take' }).catch(function (e) { if (e && e.name !== 'AbortError') dl(name); });
+    } else dl(name);
+  }
+  function dl(name) {
+    var a = document.createElement('a'); a.href = S.url; a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    toast('Saving ' + name);
+  }
+
+  /* ---------- screen wake lock ---------- */
+  function lock() {
+    try { if (navigator.wakeLock) navigator.wakeLock.request('screen').then(function (w) { S.wl = w; }).catch(function () {}); } catch (e) {}
+  }
+  function unlock() { try { if (S.wl) S.wl.release(); } catch (e) {} S.wl = null; }
+  document.addEventListener('visibilitychange', function () { if (!document.hidden && S.state === 'run') lock(); });
+
+  /* ---------- editor ---------- */
+  function stats() {
+    var text = $('script').value, words = (text.match(/\S+/g) || []).length;
+    var items = text.split(/\n\s*\n/).filter(function (s) { return s.trim(); }).length;
+    var mins = words / S.wpm;
+    $('edStats').textContent = words + ' words, ' + items + ' item' + (items === 1 ? '' : 's') + ', about ' + (mins < 1 ? Math.round(mins * 60) + ' sec' : mins.toFixed(1) + ' min') + ' at ' + S.wpm + ' wpm';
+  }
+  function openEditor() { $('script').value = S.script; stats(); $('editor').hidden = false; }
+  function closeEditor() {
+    S.script = $('script').value; save('script', S.script);
+    $('editor').hidden = true; S.p = 0; S.y = 0; build(); setUI();
+  }
+
+  /* ---------- wiring ---------- */
+  $('btnPrimary').addEventListener('click', primary);
+  $('btnStop').addEventListener('click', stop);
+  $('btnScript').addEventListener('click', openEditor);
+  $('btnCam').addEventListener('click', function () { if (S.camOn) camStop(); else camStart(); });
+  $('camCardBtn').addEventListener('click', camStart);
+  $('edDone').addEventListener('click', closeEditor);
+  $('edClear').addEventListener('click', function () { $('script').value = ''; stats(); $('script').focus(); });
+  $('script').addEventListener('input', stats);
+  $('rvSave').addEventListener('click', saveVideo);
+  $('rvRetake').addEventListener('click', function () { closeReview(true); });
+  $('rvClose').addEventListener('click', function () { closeReview(true); });
+  stage.addEventListener('click', function () { if (S.mode === 'tap') tapStep(); });
+  document.querySelector('.dock').addEventListener('click', function (e) {
+    var b = e.target.closest('button'); if (!b) return;
+    if (b.dataset.mode) setMode(b.dataset.mode);
+    else if (b.dataset.act === 'prev') jump(-1);
+    else if (b.dataset.act === 'next') jump(1);
+    else if (b.dataset.act) nudge(b.dataset.act);
+  });
+  window.addEventListener('resize', function () { measure(true); });
+  window.addEventListener('keydown', function (e) {
+    if (e.target && e.target.tagName === 'TEXTAREA') return;
+    if (e.code === 'Space') { e.preventDefault(); primary(); }
+  });
+  window.addEventListener('beforeunload', function () { unlock(); voiceStop(); });
+
+  build(); setUI();
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(function () { measure(true); });
+  requestAnimationFrame(frame);
+})();
+</script>
+
+</body>
+</html>
