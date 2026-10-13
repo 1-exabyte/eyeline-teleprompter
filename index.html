@@ -157,6 +157,13 @@ img{max-width:100%}
     border: 1px solid var(--line); border-radius: 14px; padding: 14px; font: 400 18px/1.5 var(--f-ui);
   }
   .sheet footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--dim); font-size: 14px; }
+  .opts { display: flex; flex-direction: column; gap: 10px; border-top: 1px solid var(--line); padding-top: 12px; }
+  .opt { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; cursor: pointer; }
+  .opt > span { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .opt small { color: var(--dim); font-size: 13px; text-wrap: pretty; }
+  .opt input[type="checkbox"] { flex: none; width: 26px; height: 26px; accent-color: var(--lamp); }
+  .seg.mini { flex: none; }
+  .seg.mini button { min-height: 40px; padding: 0 12px; font-size: 14px; white-space: nowrap; }
   .sheet video { flex: 1; min-height: 0; width: 100%; object-fit: contain; background: #000; border-radius: 14px; }
   .sheet .actions { display: flex; gap: 8px; }
   .pill { border: 0; background: var(--ink); color: #0a0b0d; border-radius: 999px; padding: 0 18px; min-height: 44px; font-weight: 700; cursor: pointer; }
@@ -240,7 +247,7 @@ img{max-width:100%}
 
   <section class="sheet" id="editor" hidden aria-label="Edit script">
     <header>
-      <h2>Your script</h2>
+      <h2>Script and recording</h2>
       <button class="pill" id="edDone" type="button">Done</button>
     </header>
     <p class="note">Leave a blank line between items. Each item becomes a stop you can jump to with the arrows.</p>
@@ -249,6 +256,19 @@ img{max-width:100%}
       <span id="edStats"></span>
       <button class="pill ghost" id="edClear" type="button">Clear</button>
     </footer>
+    <div class="opts" aria-label="Recording">
+      <label class="opt" for="optBoost">
+        <span><b>Boost my voice</b><small>Louder, clearer, more even speech in your videos</small></span>
+        <input type="checkbox" id="optBoost">
+      </label>
+      <div class="opt">
+        <span><b>Video shape</b><small>Both are portrait. Wide shows more around you.</small></span>
+        <div class="seg mini" role="group" aria-label="Video shape">
+          <button type="button" data-frame="wide" aria-pressed="true">Wide 3:4</button>
+          <button type="button" data-frame="tall" aria-pressed="false">Tall 9:16</button>
+        </div>
+      </div>
+    </div>
   </section>
 
   <section class="sheet" id="review" hidden aria-label="Review take">
@@ -289,8 +309,11 @@ img{max-width:100%}
     mode: 'auto', wpm: 135, fs: 34, script: DEFAULT_SCRIPT,
     camOn: false, stream: null, rec: null, chunks: [], blob: null, url: '',
     t0: 0, tSec: -1, cd: null, recog: null, wl: null, toastT: 0,
-    heardTail: [], drawing: false, outTrack: null
+    heardTail: [], drawing: false, outTrack: null,
+    boost: true, frame: 'wide', ac: null, audioNodes: null
   };
+  S.boost = load('boost', true) !== false;
+  S.frame = load('frame', 'wide') === 'tall' ? 'tall' : 'wide';
   S.script = load('script', DEFAULT_SCRIPT);
   if (typeof S.script !== 'string') S.script = DEFAULT_SCRIPT;
   S.wpm = Math.min(260, Math.max(60, +load('wpm', 135) || 135));
@@ -456,6 +479,7 @@ img{max-width:100%}
   /* ---------- session control ---------- */
   function begin() {
     if (!S.n) { openEditor(); return; }
+    if (S.camOn && S.boost) audioCtx();
     if (S.p >= S.n - .5) { S.p = 0; S.y = 0; }
     S.finished = false; S.paused = false; S.state = 'count';
     var n = 3; $('count').textContent = n; setUI();
@@ -636,15 +660,25 @@ img{max-width:100%}
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       camFail('This browser cannot open the camera from here.'); return Promise.resolve(false);
     }
-    return navigator.mediaDevices.getUserMedia({
-      // full sensor picture: resizeMode 'none' stops the browser from cropping frames to fit a size
-      video: { facingMode: 'user', width: { ideal: 1920 }, height: { ideal: 1920 }, resizeMode: 'none', frameRate: { ideal: 30 } },
-      audio: { echoCancellation: true, noiseSuppression: true }
-    }).then(function (stream) {
+    // Wide: the sensor's 4:3 mode, which held upright gives a 3:4 portrait picture.
+    // Tall: the 16:9 mode, giving 9:16. Constraints are in the sensor's own (landscape) terms.
+    // resizeMode 'none' stops the browser from cropping frames to fit a size.
+    var wide = S.frame !== 'tall';
+    var video = {
+      facingMode: 'user', width: { ideal: wide ? 1440 : 1920 }, height: { ideal: 1080 },
+      aspectRatio: { ideal: wide ? 4 / 3 : 16 / 9 }, resizeMode: 'none', frameRate: { ideal: 30 }
+    };
+    // With boost on, the browser's own auto-volume is turned off so it does not fight the boost.
+    var audio = { echoCancellation: false, noiseSuppression: true, autoGainControl: !S.boost };
+    var withZoom = Object.assign({ zoom: true }, video);
+    return navigator.mediaDevices.getUserMedia({ video: withZoom, audio: audio })
+      .catch(function () { return navigator.mediaDevices.getUserMedia({ video: video, audio: audio }); })
+      .then(function (stream) {
       S.stream = stream; cam.srcObject = stream;
       cam.onresize = function () {
         if (cam.videoWidth > cam.videoHeight) toast('Hold your phone upright for a full portrait video.');
       };
+      zoomOut();
       var pl = cam.play(); if (pl && pl.catch) pl.catch(function () {});
       S.camOn = true; app.dataset.cam = 'on'; setUI(); return true;
     }).catch(function () {
@@ -655,6 +689,19 @@ img{max-width:100%}
   function camFail(msg) {
     S.camOn = false; app.dataset.cam = 'off';
     $('camMsg').textContent = msg; setUI();
+  }
+  // Widest view the phone allows (some front cameras can go below 1x).
+  function zoomOut() {
+    var t = S.stream && S.stream.getVideoTracks()[0];
+    if (!t || !t.getCapabilities) return;
+    try {
+      var z = t.getCapabilities().zoom;
+      if (z && typeof z.min === 'number') t.applyConstraints({ advanced: [{ zoom: z.min }] }).catch(function () {});
+    } catch (e) {}
+  }
+  function restartCam() {
+    if (!S.camOn || S.state !== 'idle') return;
+    camStop(); camStart();
   }
   function camStop() {
     if (S.stream) S.stream.getTracks().forEach(function (t) { t.stop(); });
@@ -672,13 +719,13 @@ img{max-width:100%}
   // Held upright, the picture fills the frame exactly. If it ever arrives sideways,
   // all of it is fitted inside the portrait frame with black above and below.
   // Passing it through a canvas also bakes in the rotation, so the file plays upright everywhere.
-  function portraitStream() {
+  function portraitVideo() {
     var vw = cam.videoWidth, vh = cam.videoHeight;
     var canvas = document.createElement('canvas');
-    if (!vw || !vh || !canvas.captureStream) return S.stream;
+    if (!vw || !vh || !canvas.captureStream) return null;
     var W, H, k;
     if (vh >= vw) { k = Math.min(1, 1920 / vh); W = Math.round(vw * k / 2) * 2; H = Math.round(vh * k / 2) * 2; }
-    else { W = Math.round(Math.min(1080, vw) / 2) * 2; H = Math.round(W * 16 / 18) * 2; }
+    else { W = Math.round(Math.min(1080, vw) / 2) * 2; H = Math.round(W * (S.frame === 'tall' ? 16 / 9 : 4 / 3) / 2) * 2; }
     if (vw > vh) toast('Your phone is sideways, so the video will have black bars. Hold it upright to fill the frame.');
     canvas.width = W; canvas.height = H;
     var ctx = canvas.getContext('2d', { alpha: false });
@@ -695,22 +742,64 @@ img{max-width:100%}
       if (cam.requestVideoFrameCallback) cam.requestVideoFrameCallback(draw); else requestAnimationFrame(draw);
     })();
     S.outTrack = canvas.captureStream(30).getVideoTracks()[0];
-    return new MediaStream([S.outTrack].concat(S.stream.getAudioTracks()));
+    return S.outTrack;
   }
   function stopDrawing() {
     S.drawing = false;
     if (S.outTrack) { try { S.outTrack.stop(); } catch (e) {} S.outTrack = null; }
   }
+
+  /* ---------- voice boost ---------- */
+  // Created on a tap (Start/Record), because phones only allow audio processing to start from one.
+  function audioCtx() {
+    var AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return null;
+    try {
+      if (!S.ac) S.ac = new AC();
+      if (S.ac.state === 'suspended') S.ac.resume();
+    } catch (e) { S.ac = null; }
+    return S.ac;
+  }
+  // Rumble cut, a little less boxiness, more speech clarity, then a compressor that evens out
+  // loud and quiet words, makeup gain for volume, and a limiter so peaks never distort.
+  function boostedAudio() {
+    var tracks = S.stream.getAudioTracks();
+    var ac = S.boost && tracks.length ? audioCtx() : null;
+    if (!ac || !ac.createMediaStreamDestination) return tracks;
+    try {
+      var src = ac.createMediaStreamSource(new MediaStream(tracks));
+      var hp = ac.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 90; hp.Q.value = .7;
+      var box = ac.createBiquadFilter(); box.type = 'peaking'; box.frequency.value = 320; box.Q.value = 1; box.gain.value = -2;
+      var clar = ac.createBiquadFilter(); clar.type = 'peaking'; clar.frequency.value = 3200; clar.Q.value = .9; clar.gain.value = 4;
+      var air = ac.createBiquadFilter(); air.type = 'highshelf'; air.frequency.value = 9000; air.gain.value = 2;
+      var comp = ac.createDynamicsCompressor();
+      comp.threshold.value = -30; comp.knee.value = 8; comp.ratio.value = 4; comp.attack.value = .004; comp.release.value = .2;
+      var gain = ac.createGain(); gain.gain.value = 2.5;
+      var lim = ac.createDynamicsCompressor();
+      lim.threshold.value = -2; lim.knee.value = 0; lim.ratio.value = 20; lim.attack.value = .001; lim.release.value = .08;
+      var dest = ac.createMediaStreamDestination();
+      var chain = [src, hp, box, clar, air, comp, gain, lim, dest];
+      for (var i = 0; i < chain.length - 1; i++) chain[i].connect(chain[i + 1]);
+      S.audioNodes = chain;
+      return dest.stream.getAudioTracks();
+    } catch (e) { releaseAudio(); return tracks; }
+  }
+  function releaseAudio() {
+    (S.audioNodes || []).forEach(function (n) { try { n.disconnect(); } catch (e) {} });
+    S.audioNodes = null;
+  }
+
   function startRec() {
     if (!window.MediaRecorder) { toast('Recording is not supported in this browser. The script will still run.'); return; }
-    var type = pickType(), chunks = [], r, src;
-    try { src = portraitStream(); } catch (e) { stopDrawing(); src = S.stream; }
-    try { r = new MediaRecorder(src, type ? { mimeType: type, videoBitsPerSecond: 8000000 } : {}); }
-    catch (e) { stopDrawing(); toast('Recording could not start. The script will still run.'); return; }
+    var type = pickType(), chunks = [], r, vt = null;
+    try { vt = portraitVideo(); } catch (e) { stopDrawing(); }
+    var src = new MediaStream((vt ? [vt] : S.stream.getVideoTracks()).concat(boostedAudio()));
+    try { r = new MediaRecorder(src, type ? { mimeType: type, videoBitsPerSecond: 8000000, audioBitsPerSecond: 192000 } : {}); }
+    catch (e) { stopDrawing(); releaseAudio(); toast('Recording could not start. The script will still run.'); return; }
     var token = S.drawing;
     r.ondataavailable = function (e) { if (e.data && e.data.size) chunks.push(e.data); };
     r.onstop = function () {
-      if (S.drawing === token) stopDrawing();
+      if (S.drawing === token) { stopDrawing(); releaseAudio(); }
       if (!chunks.length) return;
       showReview(new Blob(chunks, { type: r.mimeType || type || 'video/webm' }));
     };
@@ -763,7 +852,13 @@ img{max-width:100%}
     var mins = words / S.wpm;
     $('edStats').textContent = words + ' words, ' + items + ' item' + (items === 1 ? '' : 's') + ', about ' + (mins < 1 ? Math.round(mins * 60) + ' sec' : mins.toFixed(1) + ' min') + ' at ' + S.wpm + ' wpm';
   }
-  function openEditor() { $('script').value = S.script; stats(); $('editor').hidden = false; }
+  function syncOpts() {
+    $('optBoost').checked = S.boost;
+    Array.prototype.forEach.call(document.querySelectorAll('[data-frame]'), function (b) {
+      b.setAttribute('aria-pressed', b.dataset.frame === S.frame ? 'true' : 'false');
+    });
+  }
+  function openEditor() { $('script').value = S.script; stats(); syncOpts(); $('editor').hidden = false; }
   function closeEditor() {
     S.script = $('script').value; save('script', S.script);
     $('editor').hidden = true; S.p = 0; S.y = 0; build(); setUI();
@@ -778,6 +873,12 @@ img{max-width:100%}
   $('edDone').addEventListener('click', closeEditor);
   $('edClear').addEventListener('click', function () { $('script').value = ''; stats(); $('script').focus(); });
   $('script').addEventListener('input', stats);
+  $('optBoost').addEventListener('change', function () { S.boost = this.checked; save('boost', S.boost); restartCam(); });
+  document.querySelector('.opts').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-frame]');
+    if (!b || b.dataset.frame === S.frame) return;
+    S.frame = b.dataset.frame; save('frame', S.frame); syncOpts(); restartCam();
+  });
   $('rvSave').addEventListener('click', saveVideo);
   $('rvRetake').addEventListener('click', function () { closeReview(true); });
   $('rvClose').addEventListener('click', function () { closeReview(true); });
